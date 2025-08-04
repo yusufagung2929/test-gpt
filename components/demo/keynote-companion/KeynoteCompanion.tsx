@@ -2,8 +2,9 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-import { useEffect, useRef } from 'react';
-import { Modality } from '@google/genai';
+import { useEffect, useRef, useState } from 'react';
+import { Modality, LiveServerContent } from '@google/genai';
+import { jsPDF } from 'jspdf';
 
 import BasicFace from '../basic-face/BasicFace';
 import { useLiveAPIContext } from '../../../contexts/LiveAPIContext';
@@ -15,11 +16,14 @@ export default function KeynoteCompanion() {
   const faceCanvasRef = useRef<HTMLCanvasElement>(null);
   const user = useUser();
   const { current } = useAgent();
+  const [transcript, setTranscript] = useState<
+    { speaker: string; text: string }[]
+  >([]);
 
   // Set the configuration for the Live API
   useEffect(() => {
     setConfig({
-      responseModalities: [Modality.AUDIO],
+      responseModalities: [Modality.AUDIO, Modality.TEXT],
       speechConfig: {
         voiceConfig: {
           prebuiltVoiceConfig: { voiceName: current.voice },
@@ -40,19 +44,52 @@ export default function KeynoteCompanion() {
   useEffect(() => {
     const beginSession = async () => {
       if (!connected) return;
-      client.send(
-        {
-          text: 'Greet the user and introduce yourself and your role.',
-        },
-        true
-      );
+      const initialText =
+        'Greet the user and introduce yourself and your role.';
+      setTranscript(prev => [...prev, { speaker: 'user', text: initialText }]);
+      client.send({ text: initialText }, true);
     };
     beginSession();
   }, [client, connected]);
 
+  // Capture textual responses from the model for transcription
+  useEffect(() => {
+    const handleContent = (data: LiveServerContent) => {
+      const texts = data.modelTurn?.parts
+        ?.map(p => p.text)
+        .filter((t): t is string => !!t);
+      if (texts?.length) {
+        setTranscript(prev => [
+          ...prev,
+          ...texts.map(t => ({ speaker: 'assistant', text: t })),
+        ]);
+      }
+    };
+    client.on('content', handleContent);
+    return () => {
+      client.off('content', handleContent);
+    };
+  }, [client]);
+
+  const downloadTranscript = () => {
+    const doc = new jsPDF();
+    transcript.forEach(({ speaker, text }, idx) => {
+      doc.text(`${speaker}: ${text}`, 10, 10 + idx * 10);
+    });
+    doc.save('transcript.pdf');
+  };
+
   return (
     <div className="keynote-companion">
       <BasicFace canvasRef={faceCanvasRef!} color={current.bodyColor} />
+      <div className="transcript">
+        {transcript.map((line, idx) => (
+          <div key={idx}>
+            <strong>{line.speaker}:</strong> {line.text}
+          </div>
+        ))}
+      </div>
+      <button onClick={downloadTranscript}>Download PDF</button>
     </div>
   );
 }
